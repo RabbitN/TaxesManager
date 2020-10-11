@@ -1,19 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 using Domain.Entities;
-using Persistance;
 using Domain.Dto;
-using Domain.Enums;
-using System.Globalization;
 using Domain.Constants;
-using System.IO;
-using Newtonsoft.Json;
-using System.Data;
+using Application.Taxes;
+using System.Linq;
 
 namespace TaxesManager.Controllers
 {
@@ -21,25 +15,26 @@ namespace TaxesManager.Controllers
     [ApiController]
     public class TaxesController : ControllerBase
     {
-        private readonly TaxesManagerDbContext _context;
+        private readonly ITaxCommand _taxCommands;
 
-        public TaxesController(TaxesManagerDbContext context)
+        public TaxesController(ITaxCommand taxCommands)
         {
-            _context = context;
+            _taxCommands = taxCommands;
         }
 
         // GET: api/Taxes
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Tax>>> GetTaxes()
         {
-            return await _context.Taxes.ToListAsync();
+            var taxes = await _taxCommands.GetTaxes();
+            return taxes.ToList();
         }
 
         // GET: api/Taxes/Vilnius/2020-09-01/2020-09-07
         [HttpGet("{municipality}/{startDate}/{endDate}")]
         public async Task<ActionResult<Tax>> GetTax(string municipality, DateTime startDate, DateTime endDate)
         {
-            var tax = await _context.Taxes.FindAsync(municipality, startDate, endDate);
+            var tax = await _taxCommands.GetTax(municipality, startDate, endDate);
             if (tax == null)
             {
                 return NotFound(Messages.NotFound);
@@ -51,24 +46,8 @@ namespace TaxesManager.Controllers
         // POST: api/Taxes/Yearly
         [HttpPost("Yearly")]
         public async Task<ActionResult<Tax>> PostTaxYearly(TaxDto taxDto)
-        {
-            Frequency frequency = Frequency.Yearly;
-
-            // provide dates for yearly schedule 
-            int year = DateTime.Now.Year;
-            DateTime startDate = new DateTime(year, 1, 1);
-            DateTime endDate = startDate.AddYears(1).AddTicks(-1).Date;
-
-            Tax tax = new Tax()
-            {
-                Municipality = taxDto.Municipality,
-                Frequency = frequency,
-                StartDate = startDate,
-                EndDate = endDate,
-                TaxAmount = taxDto.TaxAmount
-            };
-
-            return await AddTax(tax);
+        {          
+            return await _taxCommands.PostTaxYearly(taxDto);
         }
 
         // POST: api/Taxes/Monthly
@@ -77,23 +56,7 @@ namespace TaxesManager.Controllers
         {
             try
             {
-                Frequency frequency = Frequency.Monthly;
-
-                // provide dates for monthly schedule 
-                int year = DateTime.Now.Year;
-                DateTime startDate = new DateTime(year, taxDto.Month, 1);
-                DateTime endDate = new DateTime(year, taxDto.Month, DateTime.DaysInMonth(year, taxDto.Month));
-
-                Tax tax = new Tax()
-                {
-                    Municipality = taxDto.Municipality,
-                    Frequency = frequency,
-                    StartDate = startDate,
-                    EndDate = endDate,
-                    TaxAmount = taxDto.TaxAmount
-                };
-
-                return await AddTax(tax);
+                return await _taxCommands.PostTaxMonthly(taxDto);
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -107,23 +70,7 @@ namespace TaxesManager.Controllers
         {
             try
             {
-                Frequency frequency = Frequency.Weekly;
-
-                // provide dates for weekly schedule 
-                int year = DateTime.Now.Year;
-                DateTime startDate = ISOWeek.ToDateTime(year, taxDto.Week, DayOfWeek.Monday);
-                DateTime endDate = ISOWeek.ToDateTime(year, taxDto.Week, DayOfWeek.Sunday);
-
-                Tax tax = new Tax()
-                {
-                    Municipality = taxDto.Municipality,
-                    Frequency = frequency,
-                    StartDate = startDate,
-                    EndDate = endDate,
-                    TaxAmount = taxDto.TaxAmount
-                };
-
-                return await AddTax(tax);
+                return await _taxCommands.PostTaxWeekly(taxDto);
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -137,22 +84,7 @@ namespace TaxesManager.Controllers
         {
             try
             {
-                Frequency frequency = Frequency.Daily;
-
-                // provide date for daily schedule 
-                int year = DateTime.Now.Year;
-                DateTime date = new DateTime(year, taxDto.Month, taxDto.Day);
-
-                Tax tax = new Tax()
-                {
-                    Municipality = taxDto.Municipality,
-                    Frequency = frequency,
-                    StartDate = date,
-                    EndDate = date,
-                    TaxAmount = taxDto.TaxAmount
-                };
-
-                return await AddTax(tax);
+                return await _taxCommands.PostTaxDaily(taxDto);
             }
             catch (ArgumentOutOfRangeException)
             {
@@ -160,79 +92,22 @@ namespace TaxesManager.Controllers
             }
         }
 
-        private async Task<ActionResult<Tax>> AddTax(Tax tax)
-        {
-            if (!ValidTaxAmount(tax.TaxAmount))
-            {
-                return BadRequest(Messages.TaxAmountOutOfRange);
-            }
-            if (tax.Municipality == null || tax.StartDate == null || tax.EndDate == null)
-            {
-                return Conflict(Messages.MissingPrimaryKey);
-            }
-            if (TaxExists(tax.Municipality, tax.StartDate, tax.EndDate))
-            {
-                return Conflict(Messages.ExistingTax);
-            }
-
-            try
-            {
-                _context.Taxes.Add(tax);
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateException)
-            {
-                return Conflict();
-            }
-
-            return CreatedAtAction("GetTax", new { municipality = tax.Municipality, startDate = tax.StartDate, endDate = tax.EndDate }, tax);
-        }
-
         // PUT: api/Taxes/Vilnius/2020-09-01/2020-09-07
         [HttpPut("{municipality}/{startDate}/{endDate}")]
-        public async Task<IActionResult> PutTax(string municipality, DateTime startDate, DateTime endDate, [FromBody] double taxAmount)
+        public async Task<ActionResult<Tax>> PutTax(string municipality, DateTime startDate, DateTime endDate, [FromBody] double taxAmount)
         {
-            if (!ValidTaxAmount(taxAmount))
-            {
-                return BadRequest(Messages.TaxAmountOutOfRange);
-            }
-            var result = await GetTax(municipality, startDate, endDate);
-            if (result.Value != null)
-            {
-                Tax tax = result.Value;
-                tax.TaxAmount = taxAmount;
-                _context.Entry(tax).State = EntityState.Modified;
-
-                try
-                {
-                    await _context.SaveChangesAsync();
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    throw;
-                }
-
-                return Ok("Ok");
-            }
-            else
-            {
-                return NotFound(Messages.NotFound);
-            }
+            return await _taxCommands.PutTax(municipality, startDate, endDate, taxAmount);
         }
 
         // DELETE: api/Taxes/Vilnius/2020-09-01/2020-09-07
         [HttpDelete("{municipality}/{startDate}/{endDate}")]
         public async Task<ActionResult<Tax>> DeleteTax(string municipality, DateTime startDate, DateTime endDate)
         {
-            var tax = await _context.Taxes.FindAsync(municipality, startDate, endDate);
+            var tax = await _taxCommands.DeleteTax(municipality, startDate, endDate);
             if (tax == null)
             {
                 return NotFound(Messages.NotFound);
             }
-
-            _context.Taxes.Remove(tax);
-            await _context.SaveChangesAsync();
-
             return tax;
         }
 
@@ -242,21 +117,15 @@ namespace TaxesManager.Controllers
         {
             try
             {
-                DateTime dateTime = Convert.ToDateTime(date);
-                var tax = (from t in _context.Taxes
-                           where t.Municipality.StartsWith(municipality)
-                                && (t.StartDate.Month <= dateTime.Month && t.StartDate.Day <= dateTime.Day)
-                                && (t.EndDate.Month >= dateTime.Month && t.EndDate.Day >= dateTime.Day)
-                           orderby t.Frequency descending
-                           select t).FirstOrDefault();
+                Task<Tax> tax = _taxCommands.GetTaxAmount(municipality, date);
 
-                if (tax == null)
+                if (tax.Result == null)
                 {
                     return NotFound(Messages.NotFound);
                 }
-                return tax.TaxAmount;
+                return tax.Result.TaxAmount;
             }
-            catch (FormatException)
+            catch (AggregateException)
             {
                 return BadRequest(Messages.InvalidDateFormat);
             }           
@@ -266,70 +135,8 @@ namespace TaxesManager.Controllers
         [HttpPost("Import")]
         public async Task<IActionResult> ImportTaxes([FromForm(Name = "file")] IFormFile file)
         {
-            if (JsonFile(file))
-            {
-                if (file == null || file.Length == 0)
-                {
-                    return BadRequest();
-                }
-
-                var reader = new StreamReader(file.OpenReadStream());
-                var jsonData = await reader.ReadToEndAsync();
-                List<TaxDto> data = JsonConvert.DeserializeObject<List<TaxDto>>(jsonData);
-                int taxesCounter = 0;
-
-                for (int i = 0; i < data.Count; i++)
-                {
-                    try
-                    {
-                        if (data[i].Day != 0)
-                        {
-                            var result = await PostTaxDaily(data[i]);
-                            if (JsonConvert.SerializeObject(result.Result).Contains("201")) taxesCounter++;
-                        }
-                        else if (data[i].Week != 0)
-                        {
-                            var result = await PostTaxWeekly(data[i]);
-                            if (JsonConvert.SerializeObject(result.Result).Contains("201")) taxesCounter++;
-                        }
-                        else if (data[i].Month != 0)
-                        {
-                            var result = await PostTaxMonthly(data[i]);
-                            if (JsonConvert.SerializeObject(result.Result).Contains("201")) taxesCounter++;
-                        }
-                        else if(data[i]. Year != 0)
-                        {
-                            var result = await PostTaxYearly(data[i]);
-                            if (JsonConvert.SerializeObject(result.Result).Contains("201")) taxesCounter++;
-                        }
-                    }
-                    catch (Exception)
-                    {
-                    }
-                }
-
-                string message = "Imported " + taxesCounter + " out of " + data.Count;
-                return Ok(message);
-            }
-            else
-            {
-                return BadRequest(Messages.InvalidFileExtension);
-            }
-        }
-        private bool TaxExists(string municipality, DateTime startDate, DateTime endDate)
-        {
-            return _context.Taxes.Any(e => e.Municipality == municipality && e.StartDate == startDate && e.EndDate == endDate);
-        }
-
-        private bool JsonFile(IFormFile file)
-        {
-            var extension = "." + file.FileName.Split('.')[file.FileName.Split('.').Length - 1];
-            return (extension == ".json");
-        }
-
-        private bool ValidTaxAmount(double taxAmount)
-        {
-            return (taxAmount >= 0 && taxAmount <= 1);
+            var result = await _taxCommands.ImportTaxes(file);
+            return Ok(result);
         }
     }
 }
