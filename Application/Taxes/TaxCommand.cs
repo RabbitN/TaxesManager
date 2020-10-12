@@ -265,11 +265,7 @@ namespace Application.Taxes
 
         private bool TaxExists(string municipality, DateTime startDate, DateTime endDate)
         {
-            if (_context.Taxes != null)
-            {
-                return _context.Taxes.Any(e => e.Municipality == municipality && e.StartDate == startDate && e.EndDate == endDate);
-            }
-            else return false;
+            return _context.Taxes.Any(e => e.Municipality == municipality && e.StartDate == startDate && e.EndDate == endDate);
         }
 
         private bool JsonFile(IFormFile file)
